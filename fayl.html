@@ -1,0 +1,529 @@
+```
+
+```javascript name=server.js
+const express = require('express');
+const bodyParser = require('body-parser');
+const cors = require('cors');
+
+const app = express();
+app.use(cors());
+app.use(bodyParser.json());
+app.use(express.static('public'));
+
+let nextId = 1;
+const drivers = [
+  { id: nextId++, name: "Ahmad", lat: 41.311081, lon: 69.240562, available: true },
+  { id: nextId++, name: "Dilshod", lat: 41.330889, lon: 69.289524, available: true }
+];
+const users = [
+  { id: nextId++, name: "Mijoz1", phone: "998901234567" }
+];
+const rides = []; // {id, userId, driverId, from:{lat,lon}, to:{lat,lon}, status}
+
+function haversine(a, b) {
+  const toRad = v => v * Math.PI / 180;
+  const R = 6371; // km
+  const dLat = toRad(b.lat - a.lat);
+  const dLon = toRad(b.lon - a.lon);
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const sinDLat = Math.sin(dLat/2);
+  const sinDLon = Math.sin(dLon/2);
+  const aa = sinDLat*sinDLat + Math.cos(lat1)*Math.cos(lat2)*sinDLon*sinDLon;
+  const c = 2 * Math.atan2(Math.sqrt(aa), Math.sqrt(1-aa));
+  return R * c;
+}
+
+// Drivers
+app.get('/api/drivers', (req, res) => res.json(drivers));
+app.post('/api/drivers', (req, res) => {
+  const { name, lat = 41.3171, lon = 69.2405 } = req.body;
+  const d = { id: nextId++, name, lat, lon, available: true };
+  drivers.push(d);
+  res.json(d);
+});
+app.put('/api/drivers/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const d = drivers.find(x => x.id === id);
+  if (!d) return res.status(404).json({ error: 'Not found' });
+  Object.assign(d, req.body);
+  res.json(d);
+});
+
+// Users
+app.get('/api/users', (req, res) => res.json(users));
+app.post('/api/users', (req, res) => {
+  const { name, phone } = req.body;
+  const u = { id: nextId++, name, phone };
+  users.push(u);
+  res.json(u);
+});
+
+// Rides
+app.get('/api/rides', (req, res) => res.json(rides));
+app.post('/api/rides', (req, res) => {
+  const { userId, from, to } = req.body;
+  const user = users.find(u => u.id === userId);
+  if (!user) return res.status(400).json({ error: 'Invalid user' });
+
+  // Find nearest available driver
+  let best = null;
+  let bestDist = Infinity;
+  drivers.forEach(dr => {
+    if (!dr.available) return;
+    const dist = haversine({lat: dr.lat, lon: dr.lon}, from);
+    if (dist < bestDist) { bestDist = dist; best = dr; }
+  });
+
+  if (!best) return res.status(200).json({ error: 'No drivers available' });
+
+  const ride = {
+    id: nextId++,
+    userId,
+    driverId: best.id,
+    from, to,
+    status: 'assigned',
+    createdAt: new Date().toISOString()
+  };
+  rides.push(ride);
+  // mark driver unavailable
+  best.available = false;
+  res.json(ride);
+});
+
+// Simple endpoint to free driver (for demo)
+app.post('/api/completeRide', (req, res) => {
+  const { rideId } = req.body;
+  const r = rides.find(x => x.id === rideId);
+  if (!r) return res.status(404).json({ error: 'ride not found' });
+  r.status = 'completed';
+  const dr = drivers.find(d => d.id === r.driverId);
+  if (dr) dr.available = true;
+  res.json(r);
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log('Server listening on', PORT));
+```
+
+```html name=public/index.html
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Uzb Taxi - Beta</title>
+  <link rel="stylesheet" href="css/styles.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+</head>
+<body>
+  <header class="topbar">
+    <h1>Uzb Taxi</h1>
+    <nav>
+      <a href="/">Home</a>
+      <a href="/user.html">Foydalanuvchi</a>
+      <a href="/driver.html">Haydovchi</a>
+      <a href="/admin.html">Admin</a>
+    </nav>
+  </header>
+
+  <main class="container">
+    <section class="hero">
+      <h2>Tez va ishonchli haydovchi toping</h2>
+      <p>Xarita orqali joʻnatish joyini va manzilni belgilang.</p>
+    </section>
+
+    <section id="map" style="height:500px;border-radius:8px;"></section>
+
+    <section class="controls">
+      <div>
+        <label>Olchash joyi:</label>
+        <input id="from" placeholder="Manzilni belgilash" readonly>
+      </div>
+      <div>
+        <label>Boriladigan joy:</label>
+        <input id="to" placeholder="Manzilni belgilash" readonly>
+      </div>
+      <div>
+        <label>Foydalanuvchi nomi:</label>
+        <input id="username" placeholder="Ism">
+      </div>
+      <button id="requestRide">Haydovchi chaqirish</button>
+      <div id="status" class="status"></div>
+    </section>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
+```
+
+```html name=public/user.html
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Uzb Taxi - Foydalanuvchi</title>
+  <link rel="stylesheet" href="css/styles.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+</head>
+<body>
+  <header class="topbar">
+    <h1>Uzb Taxi — Foydalanuvchi</h1>
+    <nav>
+      <a href="/">Bosh sahifa</a>
+      <a href="/driver.html">Haydovchi</a>
+      <a href="/admin.html">Admin</a>
+    </nav>
+  </header>
+
+  <main class="container">
+    <div id="map" style="height:450px;border-radius:8px;"></div>
+
+    <div class="controls">
+      <input id="username" placeholder="Ismingiz">
+      <button id="saveUser">Ro'yxatdan o'tish</button>
+      <div>
+        <label>Olchash joy:</label>
+        <input id="from" readonly>
+      </div>
+      <div>
+        <label>Manzil:</label>
+        <input id="to" readonly>
+      </div>
+      <button id="requestRide">Chaqarish</button>
+      <div id="status" class="status"></div>
+    </div>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
+```
+
+```html name=public/driver.html
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Uzb Taxi - Haydovchi</title>
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Uzb Taxi — Haydovchi</h1>
+    <nav>
+      <a href="/">Bosh sahifa</a>
+      <a href="/user.html">Foydalanuvchi</a>
+      <a href="/admin.html">Admin</a>
+    </nav>
+  </header>
+
+  <main class="container">
+    <section>
+      <h2>Mening vazifalarim</h2>
+      <label>Ismingiz:</label>
+      <input id="driverName" placeholder="Ism">
+      <button id="registerDriver">Ro'yxatdan o'tish</button>
+      <div>
+        <label>Holat:</label>
+        <select id="availability">
+          <option value="true">Mavjud</option>
+          <option value="false">Band</option>
+        </select>
+      </div>
+      <h3>Biriktirilgan ride'lar</h3>
+      <ul id="myRides"></ul>
+    </section>
+  </main>
+
+  <script src="js/driver.js"></script>
+</body>
+</html>
+```
+
+```html name=public/admin.html
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Uzb Taxi - Admin</title>
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Uzb Taxi — Admin</h1>
+    <nav>
+      <a href="/">Bosh sahifa</a>
+      <a href="/user.html">Foydalanuvchi</a>
+      <a href="/driver.html">Haydovchi</a>
+    </nav>
+  </header>
+
+  <main class="container">
+    <section>
+      <h2>Haydovchilar</h2>
+      <ul id="driversList"></ul>
+      <input id="driverName" placeholder="Haydovchi ismi">
+      <button id="addDriver">Qo'shish</button>
+    </section>
+
+    <section>
+      <h2>Foydalanuvchilar</h2>
+      <ul id="usersList"></ul>
+      <input id="userName" placeholder="Foydalanuvchi ismi">
+      <input id="userPhone" placeholder="Telefon">
+      <button id="addUser">Qo'shish</button>
+    </section>
+
+    <section>
+      <h2>Ride'lar</h2>
+      <ul id="ridesList"></ul>
+    </section>
+  </main>
+
+  <script src="js/admin.js"></script>
+</body>
+</html>
+```
+
+```css name=public/css/styles.css
+:root{
+  --bg:#0f1724;
+  --card:#0b1220;
+  --accent:#ff7a00;
+  --muted:#9aa4b2;
+  --glass: rgba(255,255,255,0.03);
+}
+*{box-sizing:border-box;font-family:Inter,Arial,Helvetica,sans-serif}
+body{
+  margin:0;
+  background: linear-gradient(135deg,#071021 0%, #0b1220 60%);
+  color:#e6eef6;
+  min-height:100vh;
+}
+.topbar{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:16px 24px;background:linear-gradient(90deg, rgba(255,255,255,0.02), transparent);
+  border-bottom:1px solid rgba(255,255,255,0.03);
+}
+.topbar h1{margin:0;font-size:20px;color:var(--accent)}
+.topbar nav a{color:var(--muted);margin-left:14px;text-decoration:none}
+.container{padding:24px;max-width:1100px;margin:0 auto}
+.hero{margin-bottom:18px}
+.controls{margin-top:12px;display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+.controls input{padding:8px;border-radius:6px;border:1px solid rgba(255,255,255,0.04);background:var(--glass);color:inherit}
+.controls button{background:var(--accent);border:none;color:#081018;padding:10px 14px;border-radius:8px;cursor:pointer}
+.status{margin-top:8px;color:var(--muted)}
+.container section{background:rgba(255,255,255,0.02);padding:12px;border-radius:10px;margin-bottom:12px}
+ul{list-style:none;padding:0}
+li{padding:8px;border-bottom:1px solid rgba(255,255,255,0.02);display:flex;justify-content:space-between;align-items:center}
+.small{font-size:13px;color:var(--muted)}
+```
+
+```javascript name=public/js/main.js
+// Shared map & user logic for index.html and user.html
+const mapCenter = [41.311081, 69.240562]; // Tashkent
+let map, fromMarker, toMarker;
+function initMap(mapId='map') {
+  map = L.map(mapId).setView(mapCenter, 12);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19
+  }).addTo(map);
+
+  map.on('click', function(e){
+    if (!fromMarker) {
+      fromMarker = L.marker(e.latlng, {draggable:true}).addTo(map).bindPopup('Olchash joy').openPopup();
+      document.getElementById('from').value = `${e.latlng.lat.toFixed(6)}, ${e.latlng.lng.toFixed(6)}`;
+      fromMarker.on('dragend', ev=> {
+        const p = ev.target.getLatLng();
+        document.getElementById('from').value = `${p.lat.toFixed(6)}, ${p.lng.toFixed(6)}`;
+      });
+    } else if (!toMarker) {
+      toMarker = L.marker(e.latlng, {draggable:true}).addTo(map).bindPopup('Manzil').openPopup();
+      document.getElementById('to').value = `${e.latlng.lat.toFixed(6)}, ${e.latlng.lng.toFixed(6)}`;
+      toMarker.on('dragend', ev=> {
+        const p = ev.target.getLatLng();
+        document.getElementById('to').value = `${p.lat.toFixed(6)}, ${p.lng.toFixed(6)}`;
+      });
+    }
+  });
+}
+
+function parseCoord(str){
+  const [lat, lon] = str.split(',').map(s=>parseFloat(s));
+  return { lat, lon };
+}
+
+async function requestRide(userId, from, to) {
+  const res = await fetch('/api/rides', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ userId, from, to })
+  });
+  return res.json();
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  if (document.getElementById('map')) initMap();
+
+  const reqBtn = document.getElementById('requestRide');
+  if (reqBtn) {
+    reqBtn.addEventListener('click', async () => {
+      const nameInput = document.getElementById('username');
+      let username = nameInput && nameInput.value.trim();
+      if (!username) return alert('Iltimos, ismingizni kiriting.');
+      // create or find user
+      const usersRes = await fetch('/api/users');
+      const users = await usersRes.json();
+      let user = users.find(u=>u.name === username);
+      if (!user) {
+        const create = await fetch('/api/users', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ name: username, phone: '' })
+        });
+        user = await create.json();
+      }
+      const fromVal = document.getElementById('from').value;
+      const toVal = document.getElementById('to').value;
+      if (!fromVal || !toVal) return alert('Iltimos, xaritada manzillarni belgilang (bitta bosish — olish, keyin ikkinchi bosish — borish).');
+      const from = parseCoord(fromVal);
+      const to = parseCoord(toVal);
+      const status = document.getElementById('status');
+      status.textContent = 'Yaqin haydovchi qidirilmoqda...';
+      const r = await requestRide(user.id, from, to);
+      if (r.error) status.textContent = r.error;
+      else status.textContent = `Ride tayinlandi. Haydovchi ID: ${r.driverId}, ride ID: ${r.id}`;
+    });
+  }
+
+});
+```
+
+```javascript name=public/js/admin.js
+async function loadAll(){
+  const [driversRes, usersRes, ridesRes] = await Promise.all([
+    fetch('/api/drivers'), fetch('/api/users'), fetch('/api/rides')
+  ]);
+  const drivers = await driversRes.json();
+  const users = await usersRes.json();
+  const rides = await ridesRes.json();
+
+  const dl = document.getElementById('driversList'); dl.innerHTML='';
+  drivers.forEach(d => {
+    const li = document.createElement('li');
+    li.innerHTML = `<div><strong>${d.name}</strong><div class="small">id:${d.id} — ${d.lat.toFixed(3)},${d.lon.toFixed(3)} — ${d.available? 'Mavjud':'Band'}</div></div>
+      <div><button onclick="toggle(${d.id})">Toggle</button></div>`;
+    dl.appendChild(li);
+  });
+
+  const ul = document.getElementById('usersList'); ul.innerHTML='';
+  users.forEach(u => {
+    const li = document.createElement('li');
+    li.innerHTML = `<div>${u.name} <div class="small">id:${u.id} ${u.phone? '- '+u.phone: ''}</div></div>`;
+    ul.appendChild(li);
+  });
+
+  const rl = document.getElementById('ridesList'); rl.innerHTML='';
+  rides.forEach(r => {
+    const li = document.createElement('li');
+    li.textContent = `Ride ${r.id} — user:${r.userId} driver:${r.driverId} status:${r.status}`;
+    rl.appendChild(li);
+  });
+}
+
+async function toggle(id){
+  const res = await fetch('/api/drivers');
+  const drivers = await res.json();
+  const d = drivers.find(x=>x.id===id);
+  await fetch('/api/drivers/' + id, {
+    method:'PUT', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ available: !d.available })
+  });
+  loadAll();
+}
+
+document.addEventListener('DOMContentLoaded', ()=>{
+  loadAll();
+  document.getElementById('addDriver').addEventListener('click', async ()=>{
+    const name = document.getElementById('driverName').value.trim();
+    if(!name) return alert('Ism kiriting');
+    await fetch('/api/drivers', {method:'POST',headers:{'Content-Type':'application/json'},body: JSON.stringify({name})});
+    document.getElementById('driverName').value='';
+    loadAll();
+  });
+  document.getElementById('addUser').addEventListener('click', async ()=>{
+    const name = document.getElementById('userName').value.trim();
+    const phone = document.getElementById('userPhone').value.trim();
+    if(!name) return alert('Ism kiriting');
+    await fetch('/api/users', {method:'POST',headers:{'Content-Type':'application/json'},body: JSON.stringify({name,phone})});
+    document.getElementById('userName').value=''; document.getElementById('userPhone').value='';
+    loadAll();
+  });
+});
+```
+
+```javascript name=public/js/driver.js
+let myDriver = null;
+
+async function refreshMyRides(){
+  if(!myDriver) return;
+  const ridesRes = await fetch('/api/rides');
+  const rides = await ridesRes.json();
+  const mine = rides.filter(r => r.driverId === myDriver.id && r.status !== 'completed');
+  const el = document.getElementById('myRides');
+  el.innerHTML = '';
+  mine.forEach(r => {
+    const li = document.createElement('li');
+    li.innerHTML = `<div>Ride ${r.id} — user:${r.userId} — status:${r.status}</div>
+      <div><button onclick="complete(${r.id})">Tugallash</button></div>`;
+    el.appendChild(li);
+  });
+}
+
+async function complete(rideId){
+  await fetch('/api/completeRide', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({rideId})});
+  refreshMyRides();
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('registerDriver').addEventListener('click', async ()=>{
+    const name = document.getElementById('driverName').value.trim();
+    if(!name) return alert('Ism kiriting');
+    const res = await fetch('/api/drivers', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name})});
+    const d = await res.json();
+    myDriver = d;
+    document.getElementById('driverName').value = '';
+    alert('Siz roʻyxatdan oʻtdingiz. ID: ' + d.id);
+    refreshMyRides();
+  });
+
+  document.getElementById('availability').addEventListener('change', async (e)=>{
+    if(!myDriver) return alert('Avval ro\'yxatdan o\'ting');
+    const avail = e.target.value === 'true';
+    await fetch('/api/drivers/'+myDriver.id, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({available: avail})});
+  });
+
+  // poll for rides assigned to this driver
+  setInterval(refreshMyRides, 3000);
+});
+```
+
+Yuqoridagi starter loyihani shunday joylashtiring:
+1. Loyihani papkaga soling (fayl strukturasi public/, server.js, package.json va README.md).
+2. npm install && npm start
+3. Brauzerda http://localhost:3000 ko'ring.
+
+Qo'shimcha ishlar/optimallashtirish bo'yicha takliflar (xohlasangiz amalga oshiraman):
+- Ma'lumotlar bazasi (Postgres/Mongo) qo'shish.
+- Autentifikatsiya (JWT yoki session).
+- Haydovchilar joylashuvini haqiqiy vaqt (WebSocket) orqali yangilash.
+- Chaqiriqlarni yaxshiroq moslashtirish (yo'l va vaqtni hisoblash).
+- Mobil responsiv va estetik UI (React/Vue + UI kit).
+- Real xaritalar va yo'lni chizish (OSRM yoki Mapbox Directions).
+
+Agar xohlasangiz, men:
+- Bu kodni sizning GitHub reposiga push qilib qo'yishim mumkin (siz admin/owner ni ayting).
+- Yoki React/Next.js asosida yanada chiroyli frontend yozib berishim mumkin.
+
+Qanday qilamiz? Krasivo dizayn va qo'shimcha funksiyalar bo'yicha qaysi yo'nalishni xohlaysiz — frontendni chiroyiroq qilishmi, yoki backendni mustahkamlashmi?
